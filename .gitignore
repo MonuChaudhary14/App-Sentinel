@@ -1,0 +1,18 @@
+*.iml
+.gradle
+/local.properties
+/.idea/
+.DS_Store
+/build
+app/build
+captures
+.externalNativeBuild
+.cxx
+*.apk
+*.aab
+*.ap_
+*.dex
+output-metadata.json
+
+# Device-specific debloat notes
+iqoo-30-oct.md
