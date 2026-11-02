@@ -4,6 +4,16 @@
 
 ---
 
+## 📱 Screenshots
+
+<p align="center">
+  <img src="screenshots/monitor.png" width="31%" alt="Hardware Monitor" />
+  <img src="screenshots/debloat.png" width="31%" alt="Debloat Packages" />
+  <img src="screenshots/restorable.png" width="31%" alt="Restorable Packages" />
+</p>
+
+---
+
 ## ✨ Features
 
 * **⚡ Real-Time Hardware Telemetry:** Live RAM consumption tracking, capacity monitoring, and running process state analysis (`dumpsys meminfo`).
@@ -84,3 +94,4 @@ AppSentinel operates strictly via user-level package management (`--user 0`):
 ## 📄 License
 
 Distributed under the Apache 2.0 License. See `LICENSE` for more information.
+
