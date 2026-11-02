@@ -89,9 +89,3 @@ AppSentinel operates strictly via user-level package management (`--user 0`):
   adb shell pm install-existing --user 0 <package.name>
   ```
 
----
-
-## 📄 License
-
-Distributed under the Apache 2.0 License. See `LICENSE` for more information.
-
