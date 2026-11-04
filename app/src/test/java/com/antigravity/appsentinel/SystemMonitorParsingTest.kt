@@ -108,3 +108,4 @@ class SystemMonitorParsingTest {
         assertEquals("Randomgame", unknownUserMeta.friendlyName)
     }
 }
+

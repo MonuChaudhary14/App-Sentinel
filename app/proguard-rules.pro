@@ -11,3 +11,4 @@
 -keepnames class kotlinx.coroutines.CoroutineExceptionHandler {}
 
 # Compose rules are automatically bundled with Compose BOM
+
