@@ -1,6 +1,5 @@
 package com.antigravity.appsentinel.ui.components
 
-import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import androidx.collection.LruCache
@@ -26,12 +25,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 object IconCache {
-    private val cache = LruCache<String, ImageBitmap>(150)
+    // 200 items capped at scaled size (96x96 is only ~36KB per icon vs 1+ MB unscaled)
+    private val cache = LruCache<String, ImageBitmap>(200)
+    private val failedPackages = hashSetOf<String>()
 
     fun get(packageName: String): ImageBitmap? = cache[packageName]
 
+    fun isFailed(packageName: String): Boolean = failedPackages.contains(packageName)
+
     fun put(packageName: String, bitmap: ImageBitmap) {
         cache.put(packageName, bitmap)
+    }
+
+    fun markFailed(packageName: String) {
+        failedPackages.add(packageName)
     }
 }
 
@@ -46,25 +53,28 @@ fun AppIcon(
     var iconBitmap by remember(packageName) { mutableStateOf(IconCache.get(packageName)) }
 
     LaunchedEffect(packageName) {
-        if (iconBitmap == null) {
-            withContext(Dispatchers.IO) {
+        if (iconBitmap == null && !IconCache.isFailed(packageName)) {
+            val loaded = withContext(Dispatchers.IO) {
                 try {
                     val pm = context.packageManager
                     val drawable = pm.getApplicationIcon(packageName)
-                    val width = if (drawable.intrinsicWidth > 0) drawable.intrinsicWidth else 96
-                    val height = if (drawable.intrinsicHeight > 0) drawable.intrinsicHeight else 96
-                    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    // Render at target device resolution rather than huge intrinsic dimensions (432x432+)
+                    val density = context.resources.displayMetrics.density
+                    val targetPx = (size.value * density).toInt().coerceIn(72, 144)
+                    val bitmap = Bitmap.createBitmap(targetPx, targetPx, Bitmap.Config.ARGB_8888)
                     val canvas = Canvas(bitmap)
-                    drawable.setBounds(0, 0, canvas.width, canvas.height)
+                    drawable.setBounds(0, 0, targetPx, targetPx)
                     drawable.draw(canvas)
                     val imgBitmap = bitmap.asImageBitmap()
                     IconCache.put(packageName, imgBitmap)
-                    withContext(Dispatchers.Main) {
-                        iconBitmap = imgBitmap
-                    }
-                } catch (e: Exception) {
-                    // Fallback handled in UI
+                    imgBitmap
+                } catch (e: Throwable) {
+                    IconCache.markFailed(packageName)
+                    null
                 }
+            }
+            if (loaded != null) {
+                iconBitmap = loaded
             }
         }
     }

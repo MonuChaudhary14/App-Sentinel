@@ -1,5 +1,6 @@
 package com.antigravity.appsentinel.data
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
@@ -10,18 +11,47 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.regex.Pattern
 
+data class SystemMonitorSnapshot(
+    val health: SystemHealth,
+    val apps: List<AppInfo>
+)
+
 class SystemMonitorRepository(private val context: Context) {
 
     private val packageManager: PackageManager = context.packageManager
 
-    suspend fun getSystemHealth(): SystemHealth = withContext(Dispatchers.IO) {
-        val meminfoResult = ShizukuManager.executeCommand("dumpsys meminfo")
-        val foregroundResult = ShizukuManager.executeCommand("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'")
+    /**
+     * Single-pass fetch for both SystemHealth and AppInfo list.
+     * Prevents running heavy privileged commands (dumpsys meminfo) multiple times.
+     */
+    suspend fun getSystemMonitorSnapshot(): SystemMonitorSnapshot = withContext(Dispatchers.IO) {
+        // Fallback to accurate native Android memory info if dumpsys fails or Shizuku is offline
+        val actManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        val memInfo = ActivityManager.MemoryInfo()
+        actManager?.getMemoryInfo(memInfo)
+        val nativeTotalRam = if (memInfo.totalMem > 0) memInfo.totalMem / (1024f * 1024f) else 7600f
+        val nativeFreeRam = if (memInfo.availMem > 0) memInfo.availMem / (1024f * 1024f) else 2500f
+        val nativeUsedRam = (nativeTotalRam - nativeFreeRam).coerceAtLeast(0f)
 
-        var totalRam = 7600f
-        var freeRam = 2500f
-        var usedRam = 5100f
+        var totalRam = nativeTotalRam
+        var freeRam = nativeFreeRam
+        var usedRam = nativeUsedRam
         var runningProcs = 0
+
+        // 1. Get foreground app package (with flexible pattern matching)
+        val foregroundResult = ShizukuManager.executeCommand("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'")
+        var fgPkg = ""
+        if (foregroundResult.output.isNotEmpty()) {
+            val m = Pattern.compile("(?:u\\d+\\s+)?([a-zA-Z0-9_]+(?:\\.[a-zA-Z0-9_]+)+)/").matcher(foregroundResult.output)
+            if (m.find()) {
+                fgPkg = m.group(1) ?: ""
+            }
+        }
+
+        // 2. Single-pass meminfo execution for RAM pool stats AND per-process memory metrics
+        val meminfoResult = ShizukuManager.executeCommand("dumpsys meminfo")
+        val processRamMap = mutableMapOf<String, Float>()
+        val activeActivityPkgs = mutableSetOf<String>()
 
         if (meminfoResult.success && meminfoResult.output.isNotEmpty()) {
             val totalMatch = Pattern.compile("Total RAM:\\s+([\\d,]+)K").matcher(meminfoResult.output)
@@ -42,63 +72,10 @@ class SystemMonitorRepository(private val context: Context) {
                 usedRam = kb / 1024f
             }
 
-            // Count processes in meminfo
-            val procMatcher = Pattern.compile("^\\s*[\\d,]+K:\\s+[^\\s]+\\s+\\(pid", Pattern.MULTILINE).matcher(meminfoResult.output)
-            while (procMatcher.find()) {
-                runningProcs++
-            }
-        }
-
-        // Parse foreground package
-        var fgPkg = ""
-        if (foregroundResult.output.isNotEmpty()) {
-            val m = Pattern.compile("u0\\s+([a-zA-Z0-9_.]+)/").matcher(foregroundResult.output)
-            if (m.find()) {
-                fgPkg = m.group(1) ?: ""
-            }
-        }
-
-        var fgAppName = fgPkg
-        if (fgPkg.isNotEmpty()) {
-            try {
-                val appInfo = packageManager.getApplicationInfo(fgPkg, 0)
-                fgAppName = packageManager.getApplicationLabel(appInfo).toString()
-            } catch (e: Exception) {
-                fgAppName = CuratedKnowledgeBase.getMetadata(fgPkg, false).friendlyName
-            }
-        }
-
-        SystemHealth(
-            totalRamMb = totalRam,
-            usedRamMb = usedRam,
-            freeRamMb = freeRam,
-            foregroundPackage = fgPkg,
-            foregroundAppName = fgAppName.ifEmpty { "Home / Desktop" },
-            runningProcessesCount = runningProcs
-        )
-    }
-
-    suspend fun getApps(): List<AppInfo> = withContext(Dispatchers.IO) {
-        val appList = mutableListOf<AppInfo>()
-
-        // 1. Get foreground app package
-        val foregroundResult = ShizukuManager.executeCommand("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'")
-        var fgPkg = ""
-        if (foregroundResult.output.isNotEmpty()) {
-            val m = Pattern.compile("u0\\s+([a-zA-Z0-9_.]+)/").matcher(foregroundResult.output)
-            if (m.find()) {
-                fgPkg = m.group(1) ?: ""
-            }
-        }
-
-        // 2. Get process memory metrics from dumpsys meminfo
-        val meminfoResult = ShizukuManager.executeCommand("dumpsys meminfo")
-        val processRamMap = mutableMapOf<String, Float>()
-        val activeActivityPkgs = mutableSetOf<String>()
-        if (meminfoResult.success) {
             val pssPattern = Pattern.compile("^\\s*([\\d,]+)K:\\s+([^\\s]+)\\s+\\(pid[^)]*\\)", Pattern.MULTILINE)
             val matcher = pssPattern.matcher(meminfoResult.output)
             while (matcher.find()) {
+                runningProcs++
                 val kb = matcher.group(1)?.replace(",", "")?.toFloatOrNull() ?: 0f
                 val fullProc = matcher.group(2) ?: continue
                 val matchedText = matcher.group(0) ?: ""
@@ -110,7 +87,27 @@ class SystemMonitorRepository(private val context: Context) {
             }
         }
 
-        // 3. Get uninstalled packages still existing in system partition: pm list packages -u
+        // Resolve foreground app label
+        var fgAppName = fgPkg
+        if (fgPkg.isNotEmpty()) {
+            try {
+                val appInfo = packageManager.getApplicationInfo(fgPkg, 0)
+                fgAppName = packageManager.getApplicationLabel(appInfo).toString()
+            } catch (e: Exception) {
+                fgAppName = CuratedKnowledgeBase.getMetadata(fgPkg, false).friendlyName
+            }
+        }
+
+        val health = SystemHealth(
+            totalRamMb = totalRam,
+            usedRamMb = usedRam,
+            freeRamMb = freeRam,
+            foregroundPackage = fgPkg,
+            foregroundAppName = fgAppName.ifEmpty { "Home / Desktop" },
+            runningProcessesCount = runningProcs
+        )
+
+        // 3. Get uninstalled packages in system partition: pm list packages -u
         val uninstalledResult = ShizukuManager.executeCommand("pm list packages -u")
         val allSystemPackages = mutableSetOf<String>()
         if (uninstalledResult.success) {
@@ -124,6 +121,7 @@ class SystemMonitorRepository(private val context: Context) {
         // 4. Get currently installed packages via PackageManager
         val installedApps = packageManager.getInstalledApplications(PackageManager.GET_META_DATA)
         val installedPkgSet = mutableSetOf<String>()
+        val appList = mutableListOf<AppInfo>()
 
         for (app in installedApps) {
             val pkg = app.packageName
@@ -161,7 +159,7 @@ class SystemMonitorRepository(private val context: Context) {
             )
         }
 
-        // 5. Find packages that are in system partition but uninstalled for user 0
+        // 5. Find packages in system partition uninstalled for current user
         for (pkg in allSystemPackages) {
             if (!installedPkgSet.contains(pkg)) {
                 val meta = CuratedKnowledgeBase.getMetadata(pkg, true)
@@ -184,14 +182,20 @@ class SystemMonitorRepository(private val context: Context) {
         }
 
         // Sort: foreground first, active activities next, then by RAM, then safety level
-        appList.sortedWith(
+        val sortedApps = appList.sortedWith(
             compareByDescending<AppInfo> { it.isForeground }
                 .thenByDescending { it.hasActiveActivities }
                 .thenByDescending { it.ramUsageMb }
                 .thenBy { it.safetyLevel }
                 .thenBy { it.appName }
         )
+
+        SystemMonitorSnapshot(health = health, apps = sortedApps)
     }
+
+    suspend fun getSystemHealth(): SystemHealth = getSystemMonitorSnapshot().health
+
+    suspend fun getApps(): List<AppInfo> = getSystemMonitorSnapshot().apps
 
     suspend fun freezeApp(packageName: String): CommandResult {
         return ShizukuManager.executeCommand("pm disable-user --user 0 $packageName")

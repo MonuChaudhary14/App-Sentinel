@@ -18,10 +18,12 @@ class MainActivity : ComponentActivity() {
 
     private val binderReceivedListener = Shizuku.OnBinderReceivedListener {
         viewModel.checkShizukuStatus()
+        viewModel.refreshData()
     }
 
     private val binderDeadListener = Shizuku.OnBinderDeadListener {
         viewModel.checkShizukuStatus()
+        viewModel.refreshData()
     }
 
     private val permissionResultListener =

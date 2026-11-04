@@ -58,7 +58,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun requestShizukuPermission() {
         ShizukuManager.requestPermission(1001)
-        checkShizukuStatus()
+    }
+
+    fun openShizukuApp(context: android.content.Context) {
+        try {
+            val intent = context.packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
+            if (intent != null) {
+                context.startActivity(intent)
+            } else {
+                _uiState.update { it.copy(userMessage = "Shizuku app is not installed.") }
+            }
+        } catch (e: Exception) {
+            _uiState.update { it.copy(userMessage = "Failed to launch Shizuku: ${e.message}") }
+        }
     }
 
     fun refreshData() {
@@ -67,14 +79,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             checkShizukuStatus()
 
             try {
-                val health = repository.getSystemHealth()
-                val appList = repository.getApps()
+                val snapshot = repository.getSystemMonitorSnapshot()
                 _uiState.update {
                     it.copy(
                         isLoading = false,
                         isRefreshing = false,
-                        systemHealth = health,
-                        apps = appList
+                        systemHealth = snapshot.health,
+                        apps = snapshot.apps
                     )
                 }
             } catch (e: Exception) {

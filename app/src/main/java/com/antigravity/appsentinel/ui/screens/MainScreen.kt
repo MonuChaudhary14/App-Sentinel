@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -42,6 +43,7 @@ fun MainScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val colors = LocalAppColors.current
+    val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -104,7 +106,13 @@ fun MainScreen(
                     else -> "AppSentinel"
                 },
                 subtitle = when (uiState.selectedTab) {
-                    0 -> "${runningApps.size} running • $runningActiveCount active • $runningBgCount background"
+                    0 -> if (!uiState.shizukuConnected) {
+                        "Shizuku disconnected • Real-time stats paused"
+                    } else if (!uiState.shizukuPermissionGranted) {
+                        "Shizuku permission required"
+                    } else {
+                        "${runningApps.size} running • $runningActiveCount active • $runningBgCount background"
+                    }
                     1 -> "$totalInstalledCount total packages installed"
                     2 -> "${displayedApps.size} disabled & removed"
                     else -> ""
@@ -143,6 +151,25 @@ fun MainScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            // Shizuku Status Banner (when disconnected or permission needed)
+            if (!uiState.shizukuConnected) {
+                ShizukuStatusBanner(
+                    title = "Shizuku is not running",
+                    description = "Process monitoring and debloating require Shizuku to run privileged system commands.",
+                    actionLabel = "Open Shizuku",
+                    isWarning = true,
+                    onAction = { viewModel.openShizukuApp(context) }
+                )
+            } else if (!uiState.shizukuPermissionGranted) {
+                ShizukuStatusBanner(
+                    title = "Permission Required",
+                    description = "Grant Shizuku permission to view active processes and manage packages.",
+                    actionLabel = "Grant",
+                    isWarning = false,
+                    onAction = { viewModel.requestShizukuPermission() }
+                )
+            }
+
             // RAM Consumption Card — ONLY in Monitor Tab
             if (uiState.selectedTab == 0) {
                 SystemHealthCard(health = uiState.systemHealth)
@@ -208,7 +235,11 @@ fun MainScreen(
                     contentAlignment = Alignment.TopCenter
                 ) {
                     Text(
-                        text = "No packages match the criteria",
+                        text = if (uiState.selectedTab == 0 && !uiState.shizukuConnected) {
+                            "Shizuku is offline. Start Shizuku to view active processes."
+                        } else {
+                            "No packages match the criteria"
+                        },
                         color = colors.textMuted,
                         fontSize = 14.sp
                     )
@@ -606,6 +637,71 @@ private fun FilterChipPill(
                 color = if (isSelected) colors.onIndigo.copy(alpha = 0.8f) else colors.textMuted,
                 fontWeight = FontWeight.Medium
             )
+        }
+    }
+}
+
+@Composable
+private fun ShizukuStatusBanner(
+    title: String,
+    description: String,
+    actionLabel: String,
+    isWarning: Boolean,
+    onAction: () -> Unit
+) {
+    val colors = LocalAppColors.current
+    val accentColor = if (isWarning) AccentRed else AccentIndigo
+    val bgColor = if (isWarning) colors.redSubtle else colors.indigoSubtle
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(bgColor)
+            .border(1.dp, accentColor.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(
+                imageVector = if (isWarning) Icons.Outlined.WarningAmber else Icons.Outlined.Info,
+                contentDescription = null,
+                tint = accentColor,
+                modifier = Modifier.size(22.dp)
+            )
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = colors.textPrimary
+                )
+                Text(
+                    text = description,
+                    fontSize = 11.5.sp,
+                    color = colors.textSecondary,
+                    lineHeight = 15.sp
+                )
+            }
+
+            Button(
+                onClick = onAction,
+                colors = ButtonDefaults.buttonColors(containerColor = accentColor),
+                shape = RoundedCornerShape(8.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                modifier = Modifier.height(32.dp)
+            ) {
+                Text(
+                    text = actionLabel,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.onIndigo
+                )
+            }
         }
     }
 }
