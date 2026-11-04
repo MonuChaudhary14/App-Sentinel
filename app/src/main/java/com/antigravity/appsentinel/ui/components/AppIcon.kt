@@ -1,5 +1,6 @@
 package com.antigravity.appsentinel.ui.components
 
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import androidx.collection.LruCache
@@ -23,11 +24,12 @@ import androidx.compose.ui.unit.dp
 import com.antigravity.appsentinel.ui.theme.LocalAppColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 
 object IconCache {
     // 200 items capped at scaled size (96x96 is only ~36KB per icon vs 1+ MB unscaled)
     private val cache = LruCache<String, ImageBitmap>(200)
-    private val failedPackages = hashSetOf<String>()
+    private val failedPackages = ConcurrentHashMap.newKeySet<String>()
 
     fun get(packageName: String): ImageBitmap? = cache[packageName]
 
@@ -57,7 +59,17 @@ fun AppIcon(
             val loaded = withContext(Dispatchers.IO) {
                 try {
                     val pm = context.packageManager
-                    val drawable = pm.getApplicationIcon(packageName)
+                    val drawable = try {
+                        pm.getApplicationIcon(packageName)
+                    } catch (e: Exception) {
+                        try {
+                            val appInfo = pm.getApplicationInfo(packageName, PackageManager.MATCH_UNINSTALLED_PACKAGES)
+                            pm.getApplicationIcon(appInfo)
+                        } catch (_: Exception) {
+                            null
+                        }
+                    } ?: throw IllegalArgumentException("Icon not found")
+
                     // Render at target device resolution rather than huge intrinsic dimensions (432x432+)
                     val density = context.resources.displayMetrics.density
                     val targetPx = (size.value * density).toInt().coerceIn(72, 144)

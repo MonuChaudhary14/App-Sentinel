@@ -1,5 +1,6 @@
 package com.antigravity.appsentinel
 
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -18,7 +19,9 @@ class MainActivity : ComponentActivity() {
 
     private val binderReceivedListener = Shizuku.OnBinderReceivedListener {
         viewModel.checkShizukuStatus()
-        viewModel.refreshData()
+        if (viewModel.uiState.value.apps.isEmpty()) {
+            viewModel.refreshData()
+        }
     }
 
     private val binderDeadListener = Shizuku.OnBinderDeadListener {
@@ -27,9 +30,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private val permissionResultListener =
-        Shizuku.OnRequestPermissionResultListener { _, _ ->
+        Shizuku.OnRequestPermissionResultListener { _, grantResult ->
             viewModel.checkShizukuStatus()
-            viewModel.refreshData()
+            if (grantResult == PackageManager.PERMISSION_GRANTED) {
+                viewModel.refreshData()
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {

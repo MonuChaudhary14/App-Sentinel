@@ -3,11 +3,11 @@ package com.antigravity.appsentinel.data
 import android.content.pm.PackageManager
 import android.os.ParcelFileDescriptor
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import moe.shizuku.server.IShizukuService
 import rikka.shizuku.Shizuku
-import java.io.BufferedReader
-import java.io.InputStreamReader
 
 object ShizukuManager {
 
@@ -56,41 +56,42 @@ object ShizukuManager {
             val inPfd = remoteProcess.inputStream
             val errPfd = remoteProcess.errorStream
 
-            val output = if (inPfd != null) {
-                ParcelFileDescriptor.AutoCloseInputStream(inPfd).bufferedReader().use { it.readText() }
-            } else ""
+            coroutineScope {
+                val outDeferred = async(Dispatchers.IO) {
+                    if (inPfd != null) {
+                        ParcelFileDescriptor.AutoCloseInputStream(inPfd).bufferedReader().use { it.readText() }
+                    } else ""
+                }
+                val errDeferred = async(Dispatchers.IO) {
+                    if (errPfd != null) {
+                        ParcelFileDescriptor.AutoCloseInputStream(errPfd).bufferedReader().use { it.readText() }
+                    } else ""
+                }
 
-            val error = if (errPfd != null) {
-                ParcelFileDescriptor.AutoCloseInputStream(errPfd).bufferedReader().use { it.readText() }
-            } else ""
-
-            val exitCode = remoteProcess.waitFor()
-            CommandResult(exitCode == 0, output.trim(), error.trim(), exitCode)
+                val output = outDeferred.await()
+                val error = errDeferred.await()
+                val exitCode = remoteProcess.waitFor()
+                CommandResult(exitCode == 0, output.trim(), error.trim(), exitCode)
+            }
         } catch (e: Throwable) {
             // Fallback to standard process if Shizuku fails
             runStandardCommand(command)
         }
     }
 
-    private fun runStandardCommand(command: String): CommandResult {
-        return try {
+    private suspend fun runStandardCommand(command: String): CommandResult = withContext(Dispatchers.IO) {
+        try {
             val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
-            val reader = BufferedReader(InputStreamReader(process.inputStream))
-            val errorReader = BufferedReader(InputStreamReader(process.errorStream))
-            
-            val output = StringBuilder()
-            val error = StringBuilder()
-
-            var line: String?
-            while (reader.readLine().also { line = it } != null) {
-                output.append(line).append("\n")
+            val outDeferred = async(Dispatchers.IO) {
+                process.inputStream.bufferedReader().use { it.readText() }
             }
-            while (errorReader.readLine().also { line = it } != null) {
-                error.append(line).append("\n")
+            val errDeferred = async(Dispatchers.IO) {
+                process.errorStream.bufferedReader().use { it.readText() }
             }
-
+            val output = outDeferred.await()
+            val error = errDeferred.await()
             val exitCode = process.waitFor()
-            CommandResult(exitCode == 0, output.toString().trim(), error.toString().trim(), exitCode)
+            CommandResult(exitCode == 0, output.trim(), error.trim(), exitCode)
         } catch (e: Throwable) {
             CommandResult(false, "", e.message ?: "Execution failed", -1)
         }

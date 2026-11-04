@@ -8,6 +8,8 @@ import com.antigravity.appsentinel.data.SystemMonitorRepository
 import com.antigravity.appsentinel.model.AppInfo
 import com.antigravity.appsentinel.model.SafetyLevel
 import com.antigravity.appsentinel.model.SystemHealth
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -32,6 +34,7 @@ data class MainUiState(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = SystemMonitorRepository(application)
+    private var refreshJob: Job? = null
 
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
@@ -74,7 +77,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshData() {
-        viewModelScope.launch {
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
             _uiState.update { it.copy(isRefreshing = true) }
             checkShizukuStatus()
 
@@ -88,6 +92,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         apps = snapshot.apps
                     )
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
@@ -124,12 +130,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val lower = raw.lowercase()
         return when {
             "no root permission" in lower || "securityexception" in lower ->
-                "Locked by Vivo firmware: cannot freeze without root"
+                "Locked by system firmware: cannot modify without root"
             "delete_failed_user_restricted" in lower ->
-                "Locked by Vivo firmware: cannot remove without root"
+                "Locked by system firmware: cannot remove without root"
             else -> {
                 val lines = raw.lines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("at ") }
-                lines.lastOrNull()?.take(80) ?: "Action restricted by OEM"
+                lines.lastOrNull()?.take(80) ?: "Action restricted by system"
             }
         }
     }

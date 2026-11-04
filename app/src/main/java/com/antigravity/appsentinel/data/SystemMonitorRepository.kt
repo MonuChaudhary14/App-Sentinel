@@ -29,8 +29,8 @@ class SystemMonitorRepository(private val context: Context) {
         val actManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         val memInfo = ActivityManager.MemoryInfo()
         actManager?.getMemoryInfo(memInfo)
-        val nativeTotalRam = if (memInfo.totalMem > 0) memInfo.totalMem / (1024f * 1024f) else 7600f
-        val nativeFreeRam = if (memInfo.availMem > 0) memInfo.availMem / (1024f * 1024f) else 2500f
+        val nativeTotalRam = if (memInfo.totalMem > 0) memInfo.totalMem / (1024f * 1024f) else 0f
+        val nativeFreeRam = if (memInfo.availMem > 0) memInfo.availMem / (1024f * 1024f) else 0f
         val nativeUsedRam = (nativeTotalRam - nativeFreeRam).coerceAtLeast(0f)
 
         var totalRam = nativeTotalRam
@@ -72,17 +72,27 @@ class SystemMonitorRepository(private val context: Context) {
                 usedRam = kb / 1024f
             }
 
+            // Isolate "Total PSS by process:" to avoid double-counting from "Total PSS by OOM adjustment:"
+            val pssSection = if (meminfoResult.output.contains("Total PSS by process:")) {
+                meminfoResult.output
+                    .substringAfter("Total PSS by process:")
+                    .substringBefore("Total PSS by OOM adjustment:")
+                    .substringBefore("Total PSS by category:")
+            } else {
+                meminfoResult.output
+            }
+
             val pssPattern = Pattern.compile("^\\s*([\\d,]+)K:\\s+([^\\s]+)\\s+\\(pid[^)]*\\)", Pattern.MULTILINE)
-            val matcher = pssPattern.matcher(meminfoResult.output)
+            val matcher = pssPattern.matcher(pssSection)
             while (matcher.find()) {
                 runningProcs++
                 val kb = matcher.group(1)?.replace(",", "")?.toFloatOrNull() ?: 0f
                 val fullProc = matcher.group(2) ?: continue
                 val matchedText = matcher.group(0) ?: ""
-                val pkgName = fullProc.substringBefore(":")
-                processRamMap[pkgName] = (processRamMap[pkgName] ?: 0f) + (kb / 1024f)
+                val procName = fullProc.substringBefore(":")
+                processRamMap[procName] = (processRamMap[procName] ?: 0f) + (kb / 1024f)
                 if (matchedText.contains("/ activities")) {
-                    activeActivityPkgs.add(pkgName)
+                    activeActivityPkgs.add(procName)
                 }
             }
         }
@@ -118,8 +128,8 @@ class SystemMonitorRepository(private val context: Context) {
             }
         }
 
-        // 4. Get currently installed packages via PackageManager
-        val installedApps = packageManager.getInstalledApplications(PackageManager.GET_META_DATA)
+        // 4. Get currently installed packages via PackageManager (avoiding heavy GET_META_DATA)
+        val installedApps = packageManager.getInstalledApplications(0)
         val installedPkgSet = mutableSetOf<String>()
         val appList = mutableListOf<AppInfo>()
 
@@ -128,10 +138,18 @@ class SystemMonitorRepository(private val context: Context) {
             installedPkgSet.add(pkg)
             val isSystem = (app.flags and ApplicationInfo.FLAG_SYSTEM) != 0
             val isEnabled = app.enabled
-            val ram = processRamMap[pkg] ?: 0f
+
+            // Aggregate memory across primary process and auxiliary sub-processes
+            var ram = processRamMap[pkg] ?: 0f
+            for ((proc, procRam) in processRamMap) {
+                if (proc != pkg && (proc.startsWith("$pkg:") || proc.startsWith("$pkg."))) {
+                    ram += procRam
+                }
+            }
+
             val isRunning = ram > 0f
             val isFg = (pkg == fgPkg)
-            val hasActivities = activeActivityPkgs.contains(pkg) || isFg
+            val hasActivities = activeActivityPkgs.any { it == pkg || it.startsWith("$pkg:") || it.startsWith("$pkg.") } || isFg
 
             val label = try {
                 packageManager.getApplicationLabel(app).toString()
@@ -193,23 +211,38 @@ class SystemMonitorRepository(private val context: Context) {
         SystemMonitorSnapshot(health = health, apps = sortedApps)
     }
 
-    suspend fun getSystemHealth(): SystemHealth = getSystemMonitorSnapshot().health
-
-    suspend fun getApps(): List<AppInfo> = getSystemMonitorSnapshot().apps
+    private fun isValidPackageName(pkg: String): Boolean =
+        PACKAGE_NAME_REGEX.matches(pkg)
 
     suspend fun freezeApp(packageName: String): CommandResult {
+        if (!isValidPackageName(packageName)) {
+            return CommandResult(false, "", "Invalid package name: $packageName", -1)
+        }
         return ShizukuManager.executeCommand("pm disable-user --user 0 $packageName")
     }
 
     suspend fun unfreezeApp(packageName: String): CommandResult {
+        if (!isValidPackageName(packageName)) {
+            return CommandResult(false, "", "Invalid package name: $packageName", -1)
+        }
         return ShizukuManager.executeCommand("pm enable --user 0 $packageName")
     }
 
     suspend fun uninstallApp(packageName: String): CommandResult {
+        if (!isValidPackageName(packageName)) {
+            return CommandResult(false, "", "Invalid package name: $packageName", -1)
+        }
         return ShizukuManager.executeCommand("pm uninstall -k --user 0 $packageName")
     }
 
     suspend fun restoreApp(packageName: String): CommandResult {
-        return ShizukuManager.executeCommand("cmd package install-existing $packageName")
+        if (!isValidPackageName(packageName)) {
+            return CommandResult(false, "", "Invalid package name: $packageName", -1)
+        }
+        return ShizukuManager.executeCommand("cmd package install-existing --user 0 $packageName")
+    }
+
+    companion object {
+        private val PACKAGE_NAME_REGEX = Regex("^[a-zA-Z0-9_]+(\\.[a-zA-Z0-9_]+)+$")
     }
 }

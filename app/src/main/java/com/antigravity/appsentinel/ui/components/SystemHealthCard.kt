@@ -27,7 +27,11 @@ fun SystemHealthCard(
     val usedGb = health.usedRamMb / 1024f
     val totalGb = health.totalRamMb / 1024f
     val freeGb = (health.freeRamMb / 1024f).coerceAtLeast(0f)
-    val progress = (health.usedRamMb / health.totalRamMb).coerceIn(0f, 1f)
+    val progress = if (health.totalRamMb > 0f) {
+        (health.usedRamMb / health.totalRamMb).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
     val pct = (progress * 100).toInt()
 
     Box(
